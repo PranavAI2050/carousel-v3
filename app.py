@@ -13,12 +13,14 @@ import time
 import copy
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from dotenv import load_dotenv
 
 # ============ CONFIG ============
 app = Flask(__name__)
 
-SERP_API_KEY = "a14c34de897520de3a7cb1"
-GEMINI_KEY = "AJk"
+load_dotenv()
+SERP_API_KEY = os.environ.get("SERP_API_KEY")
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 MAX_LENGTH = 16000
 MIN_SCORE = 6
 
@@ -65,74 +67,154 @@ def scrape_with_selenium(url):
         return "No Title", ""
 
 def gemini_model_summary(title, content, topic):
+    if not content.strip():
+        return {"summary": "", "content_index": 0}
+
     prompt = f"""
 You are an AI assistant analyzing an article to assess its relevance to a given topic and generate a clear, concise summary.
 
 Your task:
-1. Write a **concise summary** (2–4 sentences max)
-2. Provide a **content_index** score between 0 and 10
+1. Write a **concise summary** (2–4 sentences max) highlighting:
+   - Key facts
+   - Named entities
+   - Relevant quotes or statistics
+   - Information suitable for a social media carousel
+2. Provide a **content_index** score between 0 and 10:
+   - 0 = not relevant to the topic
+   - 10 = highly relevant for carousel content
+   - 1–9 = partially relevant
 
-Only respond in valid JSON format:
-{{"summary": "...", "content_index": 7}}
+Only respond in valid JSON format, like below:
 
+{{
+  "summary": "Short, clear summary here.",
+  "content_index": 7
+}}
+
+---
 Topic: {topic}
 Title: {title}
+
 [CONTENT START]
 {content}
 [CONTENT END]
 """
+
     try:
         response = model.generate_content(prompt)
-        text = re.sub(r"^```(?:json)?|```$", "", response.text.strip())
-        return json.loads(text)
-    except Exception as e:
-        return {"summary": f"Error: {e}", "content_index": 0}
+        text = response.text.strip()
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        parsed = json.loads(text)
+        
+        if not isinstance(parsed, dict) or 'summary' not in parsed or 'content_index' not in parsed:
+            raise ValueError("Invalid response format")
+        return parsed
 
+    except Exception as e:
+        return {"summary": f"Error generating summary: {e}", "content_index": 0}
+        
 def join_summaries(summaries, threshold=6):
     return " ".join([
-        s['summary'].replace("\n", " ") for s in summaries if s['content_index'] >= threshold
+        summary['summary'].replace("\n", " ").replace("\r", " ")
+        for summary in summaries
+        if summary.get('content_index', 0) > threshold
     ])
 
+
 def extract_images_with_context(url):
+    valid_extensions=('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff')
     driver.get(url)
-    time.sleep(3)
+    time.sleep(3)  # Allow JS to load fully
+
     soup = BeautifulSoup(driver.page_source, "html.parser")
     images_data = []
-    title = soup.find("title").get_text(strip=True) if soup.find("title") else ""
 
+    # Extract page title
+    title_tag = soup.find("title")
+    page_title = title_tag.get_text(strip=True) if title_tag else ""
+
+    # 1. Try Open Graph image first (social preview image)
     og_image = soup.find("meta", property="og:image")
     if og_image and og_image.get("content"):
         images_data.append({
-            "title": title, "src": og_image["content"].strip(), "alt": "OG", "context": "OG image",
-            "width": None, "height": None, "index": -1, "is_logo": False, "is_og": True
+            "title": page_title,
+            "src": og_image["content"].strip(),
+            "alt": "Open Graph Image",
+            "context": "This is the Open Graph image used for previews",
+            "width": None,
+            "height": None,
+            "position_index": -1,  # Prioritize OG image
+            "is_probably_logo": False,
+            "is_og_image": True
         })
 
-    all_imgs = driver.find_elements("tag name", "img")
+    # 2. Extract regular <img> tags with additional metadata
+    all_imgs = driver.find_elements("tag name", "img")  # For dimension info via Selenium
     bs_imgs = soup.find_all("img")
 
     for idx, img_el in enumerate(all_imgs):
-        if idx >= len(bs_imgs): continue
-        img_tag = bs_imgs[idx]
-        src = img_tag.get("src", "") or img_tag.get("data-src", "")
-        if not src or not src.lower().endswith(('.jpg', '.png', '.webp', '.jpeg')): continue
+        try:
+            if idx >= len(bs_imgs):
+                continue  # Avoid index mismatch
 
-        width = img_el.size.get("width", 0)
-        height = img_el.size.get("height", 0)
-        if width < 50 or height < 50: continue
+            img_tag = bs_imgs[idx]
+            alt_text = img_tag.get("alt", "").strip()
+            src = img_tag.get("src", "") or img_tag.get("data-src", "")
+            src = src.strip()
 
-        context = ""
-        fig = img_tag.find_parent("figure")
-        if fig and fig.find("figcaption"):
-            context = fig.find("figcaption").get_text(strip=True)
-        if not context:
-            prev = img_tag.find_previous_sibling(["p", "h2", "h3"])
-            if prev: context = prev.get_text(strip=True)
+            # Skip if src is empty or invalid
+            if not src or not src.lower().endswith(valid_extensions):
+                continue
 
-        images_data.append({
-            "title": title, "src": src.strip(), "alt": img_tag.get("alt", ""),
-            "context": context, "width": width, "height": height,
-            "index": idx, "is_logo": "logo" in src.lower(), "is_og": False
-        })
+            # Filter by common non-content patterns
+            if re.search(r"(sprite|icon|logo|tracking|ads|analytics)", src.lower()):
+                continue
+
+            # Get dimensions
+            width = img_el.size.get("width", 0)
+            height = img_el.size.get("height", 0)
+            if width < 50 or height < 50:
+                continue  # Skip tiny/invisible images
+
+            # Try to find context: figcaption > parent > siblings
+            context = ""
+
+            figure = img_tag.find_parent("figure")
+            if figure:
+                figcaption = figure.find("figcaption")
+                if figcaption:
+                    context = figcaption.get_text(strip=True)
+
+            if not context:
+                current = img_tag
+                for _ in range(2):
+                    parent = current.find_parent()
+                    if parent and parent.get_text(strip=True):
+                        context = parent.get_text(strip=True)
+                        break
+                    current = parent if parent else current
+
+            if not context:
+                prev = img_tag.find_previous_sibling(["p", "h2", "h3"])
+                if prev:
+                    context = prev.get_text(strip=True)
+
+            images_data.append({
+                "title": page_title,
+                "src": src,
+                "alt": alt_text,
+                "context": context,
+                "width": width,
+                "height": height,
+                "position_index": idx,
+                "is_probably_logo": "logo" in src.lower() or "logo" in alt_text.lower(),
+                "is_og_image": False
+            })
+
+        except Exception as e:
+            print(f"Image {idx} skipped due to error: {e}")
+            continue
 
     return images_data
 
