@@ -59,7 +59,10 @@ def generate_content():
             link = result.get('link', '')
             if link:
                 results_list.append({'title': title, 'link': link})
-        
+                
+        serp_links = {result.get('link') for result in results.get('organic_results', []) if result.get('link')}
+        links_to_be_search = [link for link in links_to_be_search if link not in serp_links]
+
         for link in links_to_be_search:
             results_list.append({'title': 'Custom Link', 'link': link})
 
@@ -130,7 +133,8 @@ def generate_content():
             "status": "success",
             "final_content": final_content,
             "summary": summary_text,
-            "top_images": top_images
+            "top_images": top_images,
+            "image_sources": img_links
         })
 
     except Exception as e:
