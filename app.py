@@ -48,7 +48,7 @@ def generate_content():
             'q': topic,
             'api_key': serp_api_key,
             'engine': 'google',
-            'num': '2',
+            'num': '10',
         }
         search = GoogleSearch(params)
         results = search.get_dict()
