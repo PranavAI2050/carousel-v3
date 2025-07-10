@@ -62,6 +62,7 @@ def generate_content():
                 
         serp_links = {result.get('link') for result in results.get('organic_results', []) if result.get('link')}
         links_to_be_search = [link for link in links_to_be_search if link not in serp_links]
+        del serp_links 
 
         for link in links_to_be_search:
             results_list.append({'title': 'Custom Link', 'link': link})
@@ -83,6 +84,8 @@ def generate_content():
                         'title': title,
                         'content': chunk
                     })
+                del chunks
+        del results_list
 
         summaries = []
         for result in results_list_updated:
@@ -94,14 +97,18 @@ def generate_content():
                 'summary': summary_result.get("summary", ""),
                 'content_index': summary_result.get("content_index", 0)
             })
+        del results_list_updated
 
         summary_text = join_summaries(summaries)
+        del summaries
 
         final_images = collect_valid_images_from_links(links_only, results_list,driver)
         desc_strings, img_links = convert_images_to_llm_strings(final_images)
 
         chunks = chunk_descriptions(desc_strings)
         evaluated = evaluate_chunks_with_llm(chunks,topic)
+        del desc_strings  
+        del chunks 
         top_images = filter_top_images(evaluated, img_links)
 
         prompt = generate_carousel_prompt(
@@ -112,8 +119,13 @@ def generate_content():
             Extra_Content_Description = Extra_Content_Description,
             Content_Specifications = Content_Specifications
         )
+        del summary_text
+        del json_template_str
+        del Extra_Content_Description
+        del Content_Specifications
 
         response = model.generate_content(prompt)
+        del prompt
         raw_output = response.text.strip()
 
         if raw_output.startswith("```json"):
@@ -132,7 +144,6 @@ def generate_content():
         return jsonify({
             "status": "success",
             "final_content": final_content,
-            "summary": summary_text,
             "top_images": top_images,
             "image_sources": img_links
         })
