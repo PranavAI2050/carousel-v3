@@ -233,7 +233,6 @@ def collect_valid_images_from_links(links, results_list, driver):
 
     for i, url in enumerate(links):
         title = results_list[i].get('title', f"Page {i+1}")
-        print(f"🔗 Processing: {title} ({url})")
         try:
             images = extract_images_with_context(url, driver)
             all_valid_images.extend(images)
