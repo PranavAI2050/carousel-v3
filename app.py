@@ -3,6 +3,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from serpapi import GoogleSearch
 import json
+from selenium_context import create_driver 
 
 from utils import (
     model,
@@ -24,6 +25,10 @@ from utils import (
 )
 
 app = Flask(__name__)
+
+def scrape_page_isolated(url):
+    with create_driver() as driver:
+        return scrape_with_selenium(url, driver)
 
 @app.route('/generate_content', methods=['POST'])
 def generate_content():
@@ -75,7 +80,7 @@ def generate_content():
             if not url or is_pdf(url) or not is_webpage(url):
                 continue
 
-            title, content = scrape_with_selenium(url, driver)
+            title, content = scrape_page_isolated(url)
             if content:
                 links_only.append(url)
                 chunks = split_text(content)
@@ -102,7 +107,11 @@ def generate_content():
         summary_text = join_summaries(summaries)
         del summaries
 
-        final_images = collect_valid_images_from_links(links_only, results_list,driver)
+        with create_driver() as driver:
+            final_images = collect_valid_images_from_links(links_only, results_list, driver)
+
+        # final_images = collect_valid_images_from_links(links_only, results_list,driver)
+        del links_only
         desc_strings, img_links = convert_images_to_llm_strings(final_images)
 
         chunks = chunk_descriptions(desc_strings)
